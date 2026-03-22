@@ -8,6 +8,9 @@ let shader = new PIXI.Filter(null, `
     uniform float edgeSmoothing;
     uniform float acceleration;
     uniform float zoomLevel;
+    uniform float blurAngle;
+    uniform float blurAmount;
+    uniform float opacityMod;
 
     vec4 invertColors(vec4 color) {
         return vec4(1.0 - color.rgb, color.a);
@@ -41,6 +44,29 @@ let shader = new PIXI.Filter(null, `
         return vec4(hsv2rgb(hsv), color.a);
     }
 
+    vec4 getModified(vec2 uv) {
+        vec4 c = texture2D(uSampler, uv);
+        return cyanBlueCorrection(invertColors(c));
+    }
+
+    vec4 directionalBlur(vec2 uv, float angle, float amount) {
+        vec4 acc = vec4(0.0);
+        vec2 dir = vec2(cos(angle), sin(angle));
+        vec2 pxOffset = dir * amount / filterArea;
+
+        acc += getModified(uv - pxOffset * 4.0) * 0.05;
+        acc += getModified(uv - pxOffset * 3.0) * 0.09;
+        acc += getModified(uv - pxOffset * 2.0) * 0.12;
+        acc += getModified(uv - pxOffset * 1.0) * 0.15;
+        acc += getModified(uv) * 0.18;
+        acc += getModified(uv + pxOffset * 1.0) * 0.15;
+        acc += getModified(uv + pxOffset * 2.0) * 0.12;
+        acc += getModified(uv + pxOffset * 3.0) * 0.09;
+        acc += getModified(uv + pxOffset * 4.0) * 0.05;
+
+        return acc;
+    }
+
     void main(void) {
         vec2 uv = vTextureCoord;
         vec2 px = vec2(1.0 / filterArea.x, 1.0 / filterArea.y);
@@ -65,8 +91,15 @@ let shader = new PIXI.Filter(null, `
         
         vec4 invertedColor = invertColors(originalColor);
         vec4 correctedColor = cyanBlueCorrection(invertedColor);
+
+        // make a sin wave that oscillates between -0.5 and 0.5 over time multiplied by height from center, and add it to the blur angle
+        float blurAnglePost = blurAngle + sin(zoomedUV.y * 55.0 + time * 0.05) * 0.5;
+
+        vec4 blurredColor = directionalBlur(zoomedUV, blurAnglePost, blurAmount);
+
+        blurredColor = mix(correctedColor, blurredColor, opacityMod);
         
-        vec4 finalColor = mix(correctedColor, originalColor, smoothEdge);
+        vec4 finalColor = mix(blurredColor, originalColor, smoothEdge);
         
         gl_FragColor = vec4(finalColor.rgb, finalColor.a);
     }
@@ -79,6 +112,12 @@ let zoomPhaseTransition = 5;
 let zoomPhase = 0;
 let zoomStartTime = 0;
 let currentZoom = 1.0;
+let minBlurOpacity = 0.4;
+
+//90 degrees in radians
+let baseAngle = 1.5708;
+
+shader.uniforms.opacityMod = 1.0;
 
 function easeIn(t) {
     return Math.pow(t, 1.3);
@@ -104,6 +143,13 @@ canvas.app.ticker.add((delta) => {
         currentZoom = Math.max(1.0, currentZoom - easedProgress);
     }
     
+    let opacityProgress = Math.min(1.0, time * 0.03);
+    shader.uniforms.opacityMod = 1.0 - (opacityProgress * (1.0 - minBlurOpacity));
+
+    //angle plus sin() delta
+    baseAngle += sin(time * 0.02) * 0.01;
+    shader.uniforms.blurAngle = baseAngle;
+
     shader.uniforms.time = time;
     shader.uniforms.zoomLevel = currentZoom;
 });
@@ -112,4 +158,5 @@ shader.uniforms.expansionSpeed = 0.01;
 shader.uniforms.edgeSmoothing = 0.001;
 shader.uniforms.acceleration = 0.003;
 shader.uniforms.zoomLevel = 1.0;
+shader.uniforms.blurAmount = 8.0;
 canvas.app.stage.filters = [shader];
