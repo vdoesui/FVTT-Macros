@@ -15,7 +15,7 @@ async function obtenerContenidoDirectorio(rutaBase) {
     });
 
     busqueda.files.forEach(ruta => {
-        const nombreExt = decodeURIComponent(ruta.split('/').pop());
+        const nombreExt = decodeURIComponent(ruta.split('/').pop().split('?')[0]);
         if (nombreExt.startsWith("_") || nombreExt.startsWith("error_")) return;
         
         const partes = nombreExt.split('.');
@@ -48,6 +48,38 @@ async function compilarCatalogo(rutaBase, catalogo = []) {
     return catalogo;
 }
 
+async function obtenerContadorCorreos() {
+    let total = 0;
+    const nombreUsuario = game.user.name.replace(/ /g, "_");
+    const esGM = game.user.isGM;
+    let directoriosMail = [];
+
+    if (esGM) {
+        try {
+            const busquedaBase = await FilePicker.browse("data", directorioBase);
+            directoriosMail = busquedaBase.dirs.filter(d => d.split('/').pop().startsWith("mail-"));
+        } catch (e) {}
+    } else {
+        directoriosMail = [`${directorioBase}/mail-${nombreUsuario}`];
+    }
+
+    for (const dirMail of directoriosMail) {
+        try {
+            const busquedaDir = await FilePicker.browse("data", dirMail);
+            for (const archivoRuta of busquedaDir.files) {
+                if (archivoRuta.endsWith(".txt")) {
+                    const resp = await fetch(archivoRuta);
+                    const textoMail = await resp.text();
+                    if (textoMail.trim() !== "_DELETED_" && !textoMail.includes("[Leido]")) {
+                        total++;
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+    return total;
+}
+
 class Win98Desktop extends Application {
     constructor(archivos, catalogoGlobal, archivoErrorInicial) {
         super();
@@ -72,8 +104,11 @@ class Win98Desktop extends Application {
         return archivos.map((archivo) => {
             const icono = archivo.tipo === "txt" ? "📝" : archivo.tipo === "avif" ? "🖼️" : archivo.tipo === "dir" ? "📁" : archivo.tipo === "mail" ? "📧" : "🗃️";
             const dataStr = encodeURIComponent(JSON.stringify(archivo));
+            const badge = archivo.tipo === "mail" ? `<div id="badge-correo" style="position: absolute; top: 0; right: 15px; z-index: 10; background: red; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; font-family: sans-serif; font-weight: bold; display: ${archivo.count > 0 ? 'flex' : 'none'}; justify-content: center; align-items: center; border: 1px solid white;">${archivo.count}</div>` : "";
+            
             return `
-                <div class="win98-icono" data-file="${dataStr}" style="display: flex; flex-direction: column; align-items: center; width: 80px; margin-bottom: 15px; cursor: var(--cursorg-url), auto !important;">
+                <div class="win98-icono" data-file="${dataStr}" style="position: relative; display: flex; flex-direction: column; align-items: center; width: 80px; margin-bottom: 15px; cursor: var(--cursorg-url), auto !important;">
+                    ${badge}
                     <div style="font-size: 32px; filter: drop-shadow(2px 2px 0px rgba(0,0,0,0.5));">${icono}</div>
                     <div style="color: white; font-family: 'DOS', sans-serif; font-size: 12px; text-align: center; word-break: break-all; background: rgba(0,0,128,0.5); padding: 2px;">${archivo.nombre}</div>
                 </div>
@@ -130,7 +165,7 @@ class Win98Desktop extends Application {
                 <div id="win98-boot-screen" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 30000; background: white url('${imagenArranque}') center/contain no-repeat; background-origin: content-box; padding: 15%; box-sizing: border-box; ${this.archivoErrorInicial ? 'display: none;' : ''}"></div>
                 ${this.archivoErrorInicial ? `<div id="win98-error-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 99999; background: black url('${this.archivoErrorInicial}') center/100% 100% no-repeat; pointer-events: all;"></div>` : ''}
                 
-                <div style="flex: 1; padding: 10px; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start; position: relative;" id="win98-desktop-area">
+                <div style="flex: 1; min-height: 0; overflow-x: auto; padding: 10px; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start; position: relative;" id="win98-desktop-area">
                     ${this._generarIconosHTML()}
                 </div>
 
@@ -159,6 +194,8 @@ class Win98Desktop extends Application {
 
     activateListeners(html) {
         super.activateListeners(html);
+        const app = this;
+        
         html.on("click", () => {
             game.macros.getName("Click").execute();
         });
@@ -178,7 +215,7 @@ class Win98Desktop extends Application {
             try {
                 const busqueda = await FilePicker.browse("data", directorioBase);
                 const archivoError = busqueda.files.find(ruta => {
-                    const nombre = ruta.split('/').pop();
+                    const nombre = ruta.split('/').pop().split('?')[0];
                     return nombre.startsWith("error_") && nombre.endsWith(".avif");
                 });
 
@@ -235,7 +272,7 @@ class Win98Desktop extends Application {
             
             const busqueda = await FilePicker.browse("data", directorioBase);
             const archivoError = busqueda.files.find(ruta => {
-                const nombre = ruta.split('/').pop();
+                const nombre = ruta.split('/').pop().split('?')[0];
                 return nombre.startsWith("error_") && nombre.endsWith(".avif");
             });
 
@@ -255,25 +292,26 @@ class Win98Desktop extends Application {
             
             html.find(".win-window").remove();
             html.find("#win98-taskbar-windows").empty();
-            this.ventanasAbiertas = 0;
+            app.ventanasAbiertas = 0;
 
-            this.archivos = await obtenerContenidoDirectorio(directorioBase);
-            this.archivos.unshift({ nombre: "Correo", tipo: "mail" });
-            this.catalogoGlobal = await compilarCatalogo(directorioBase);
-            html.find("#win98-desktop-area").html(this._generarIconosHTML());
+            app.archivos = await obtenerContenidoDirectorio(directorioBase);
+            const numCorreos = await obtenerContadorCorreos();
+            app.archivos.unshift({ nombre: "Correo", tipo: "mail", count: numCorreos });
+            app.catalogoGlobal = await compilarCatalogo(directorioBase);
+            html.find("#win98-desktop-area").html(app._generarIconosHTML());
         });
 
         html.on("click", ".win98-icono", async (e) => {
             const archivo = JSON.parse(decodeURIComponent(e.currentTarget.dataset.file));
             const nombre = archivo.nombre;
-            const idVentana = `win-${this.ventanasAbiertas++}`;
+            const idVentana = `win-${app.ventanasAbiertas++}`;
             const iconoTaskbar = archivo.tipo === "txt" ? "📝" : archivo.tipo === "avif" ? "🖼️" : archivo.tipo === "dir" ? "📁" : archivo.tipo === "mail" ? "📧" : "🗃️";
             
             const btnTaskbar = $(`<button id="task-${idVentana}" style="flex: 0 0 auto; width: auto; font-family: 'DOS', sans-serif; padding: 2px 6px; margin: 0; border: 2px solid !important; border-color: #fff #000 #000 #fff !important; border-radius: 0; background: #c0c0c0; color: black; cursor: var(--cursorg-url), auto !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; height: 22px; line-height: 14px; text-align: left; font-weight: bold; display: flex; align-items: center; gap: 4px;"><span style="line-height: 1;">${iconoTaskbar}</span><span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${nombre}</span></button>`);
             html.find("#win98-taskbar-windows").append(btnTaskbar);
 
             const ventana = $(`
-                <div id="${idVentana}" class="win-window" style="position: absolute; top: ${5 + (this.ventanasAbiertas * 3)}%; left: ${5 + (this.ventanasAbiertas * 3)}%; width: 50%; height: 60%; background: #c0c0c0; border: 2px solid; border-color: #fff #000 #000 #fff; display: flex; flex-direction: column; z-index: ${10 + this.ventanasAbiertas};">
+                <div id="${idVentana}" class="win-window" style="position: absolute; top: ${5 + (app.ventanasAbiertas * 3)}%; left: ${5 + (app.ventanasAbiertas * 3)}%; width: 50%; height: 60%; background: #c0c0c0; border: 2px solid; border-color: #fff #000 #000 #fff; display: flex; flex-direction: column; z-index: ${10 + app.ventanasAbiertas};">
                     <div class="win-header" style="background: #000080; color: #fff; font-weight: bold; padding: 2px 4px; display: flex; justify-content: space-between; align-items: center; cursor: move;">
                         <span style="font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${nombre}</span>
                         <div style="display: flex; gap: 2px;">
@@ -324,7 +362,7 @@ class Win98Desktop extends Application {
             });
 
             if (archivo.tipo === "txt") {
-                const divText = $(`<div style="width: 100%; height: 100%; font-smooth: never; -webkit-font-smoothing: never; box-sizing: border-box; font-family: 'Courier New', Courier, monospace; padding: 4px; overflow: auto; background: #fff; color: #000; white-space: pre-wrap;"></div>`);
+                const divText = $(`<div style="width: 100%; height: 100%; font-smooth: never; -webkit-font-smoothing: never; box-sizing: border-box; font-family: 'neuemachina'; padding: 4px; overflow: auto; background: #fff; color: #000; white-space: pre-wrap;"></div>`);
                 contenido.append(divText);
                 
                 const respuesta = await fetch(archivo.txt);
@@ -334,7 +372,7 @@ class Win98Desktop extends Application {
                 const escribirAleatorio = () => {
                     if (!$.contains(document, divText[0])) return;
                     if (i >= texto.length) {
-                        divText.html(this._procesarEnlaces(texto));
+                        divText.html(app._procesarEnlaces(texto));
                         return;
                     }
                     const chunkSize = Math.floor(Math.random() * 180) + 5;
@@ -344,7 +382,7 @@ class Win98Desktop extends Application {
                     const ultimoPunto = textoVisible.lastIndexOf('.');
                     
                     if (ultimoPunto !== -1) {
-                        const parteProcesada = this._procesarEnlaces(textoVisible.slice(0, ultimoPunto + 1));
+                        const parteProcesada = app._procesarEnlaces(textoVisible.slice(0, ultimoPunto + 1));
                         const parteCruda = textoVisible.slice(ultimoPunto + 1).replace(/</g, "&lt;").replace(/>/g, "&gt;");
                         divText.html(parteProcesada + parteCruda);
                     } else {
@@ -371,7 +409,7 @@ class Win98Desktop extends Application {
                     divImg.find("img").css("clip-path", "inset(0 0 0 0)");
                 }, 50);
 
-                const divText = $(`<div style="width: 100%; box-sizing: border-box; font-smooth: never; -webkit-font-smoothing: never; font-family: 'Courier New', Courier, monospace; padding: 4px; color: #000; white-space: pre-wrap;"></div>`);
+                const divText = $(`<div style="width: 100%; box-sizing: border-box; font-smooth: never; -webkit-font-smoothing: never; font-family: 'neuemachina'; padding: 4px; color: #000; white-space: pre-wrap;"></div>`);
                 contenido.append(divText);
 
                 const respuesta = await fetch(archivo.txt);
@@ -381,7 +419,7 @@ class Win98Desktop extends Application {
                 const escribirAleatorio = () => {
                     if (!$.contains(document, divText[0])) return;
                     if (i >= texto.length) {
-                        divText.html(this._procesarEnlaces(texto));
+                        divText.html(app._procesarEnlaces(texto));
                         return;
                     }
                     const chunkSize = Math.floor(Math.random() * 180) + 5;
@@ -391,7 +429,7 @@ class Win98Desktop extends Application {
                     const ultimoPunto = textoVisible.lastIndexOf('.');
                     
                     if (ultimoPunto !== -1) {
-                        const parteProcesada = this._procesarEnlaces(textoVisible.slice(0, ultimoPunto + 1));
+                        const parteProcesada = app._procesarEnlaces(textoVisible.slice(0, ultimoPunto + 1));
                         const parteCruda = textoVisible.slice(ultimoPunto + 1).replace(/</g, "&lt;").replace(/>/g, "&gt;");
                         divText.html(parteProcesada + parteCruda);
                     } else {
@@ -405,10 +443,11 @@ class Win98Desktop extends Application {
             } else if (archivo.tipo === "dir") {
                 contenido.css({ "overflow": "auto", "display": "flex", "flex-wrap": "wrap", "align-content": "flex-start", "padding": "10px" });
                 const subArchivos = await obtenerContenidoDirectorio(archivo.ruta);
-                contenido.html(this._generarIconosHTML(subArchivos));
+                contenido.html(app._generarIconosHTML(subArchivos));
             } else if (archivo.tipo === "mail") {
                 const nombreUsuario = game.user.name.replace(/ /g, "_");
                 const esGM = game.user.isGM;
+                let timerLeido = null;
 
                 const divMail = $(`<div style="width: 100%; height: 100%; display: flex; flex-direction: column; background: #c0c0c0; font-family: 'DOS', sans-serif; font-size: 12px; box-sizing: border-box; overflow: hidden; color: #000000;">
                     <div style="display: flex; gap: 4px; padding: 4px; border-bottom: 2px solid #808080; background: #c0c0c0;">
@@ -442,10 +481,24 @@ class Win98Desktop extends Application {
                                     const textoMail = await resp.text();
                                     if (textoMail.trim() === "_DELETED_") continue;
 
+                                    let timestampObj;
+                                    const matchArchivo = archivoRuta.split('/').pop().match(/^(\d+)/);
+                                    if (matchArchivo) {
+                                        timestampObj = parseInt(matchArchivo[1]);
+                                    } else {
+                                        const headDate = resp.headers.get("Last-Modified");
+                                        timestampObj = headDate ? new Date(headDate).getTime() : Date.now();
+                                    }
+                                    const objFecha = new Date(timestampObj);
+                                    objFecha.setFullYear(objFecha.getFullYear() - 20);
+                                    const strFechaStr = objFecha.getDate().toString().padStart(2, '0') + "/" + (objFecha.getMonth() + 1).toString().padStart(2, '0') + "/" + objFecha.getFullYear() + " " + objFecha.getHours().toString().padStart(2, '0') + ":" + objFecha.getMinutes().toString().padStart(2, '0');
+
+                                    const esLeido = textoMail.includes("[Leido]");
+                                    const textoOriginal = textoMail;
                                     const lineas = textoMail.split('\n');
                                     const lineaEmisor = lineas.find(l => l.startsWith("Emisor: ")) || "Emisor: Desconocido";
                                     const lineaAsunto = lineas.find(l => l.startsWith("Asunto: ")) || "Asunto: Sin Asunto";
-                                    const cuerpoLimpio = lineas.filter(l => !l.startsWith("Emisor: ") && !l.startsWith("Asunto: ")).join('\n').replace(/^\s+/, '');
+                                    const cuerpoLimpio = lineas.filter(l => !l.startsWith("Emisor: ") && !l.startsWith("Asunto: ")).join('\n').replace(/\[Leido\]/g, '').replace(/^\s+/, '');
                                     
                                     let asuntoFinal = lineaAsunto.replace("Asunto: ", "").trim();
                                     if (esGM) {
@@ -458,7 +511,10 @@ class Win98Desktop extends Application {
                                         dir: dirMail,
                                         emisor: lineaEmisor.replace("Emisor: ", "").trim(),
                                         asunto: asuntoFinal,
-                                        cuerpo: cuerpoLimpio
+                                        fecha: strFechaStr,
+                                        cuerpo: cuerpoLimpio,
+                                        textoOriginal: textoOriginal,
+                                        esLeido: esLeido
                                     });
                                 }
                             }
@@ -467,7 +523,8 @@ class Win98Desktop extends Application {
 
                     let htmlLista = `<div style="width: 35%; border: 2px solid; border-color: #808080 #fff #fff #808080; background: #fff; overflow-y: auto; margin-right: 4px;">`;
                     listaMails.forEach((m, i) => {
-                        htmlLista += `<div class="mail-item" data-index="${i}" style="padding: 4px; cursor: var(--cursorg-url), auto !important; border-bottom: 1px solid #c0c0c0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #000000;">${m.asunto}</div>`;
+                        const styleNoLeido = (!esGM && !m.esLeido) ? "font-weight: bold;" : "";
+                        htmlLista += `<div class="mail-item" data-index="${i}" style="padding: 4px; cursor: var(--cursorg-url), auto !important; border-bottom: 1px solid #c0c0c0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #000000; ${styleNoLeido}">${m.asunto}</div>`;
                     });
                     htmlLista += `</div><div style="flex: 1; border: 2px solid; border-color: #808080 #fff #fff #808080; background: #c0c0c0; padding: 4px; overflow: hidden; display: flex; flex-direction: column;" class="mail-body"><div style="background:#fff; width:100%; height:100%; padding:4px; color:#000000;">Seleccione un mensaje.</div></div>`;
                     
@@ -477,15 +534,17 @@ class Win98Desktop extends Application {
                         divMail.find(".mail-item").css("background", "transparent").css("color", "#000000");
                         $(this).css("background", "#000080").css("color", "white");
                         const mensaje = listaMails[$(this).data("index")];
+                        const $item = $(this);
                         
                         divMail.find(".mail-body").html(`
                             <div style="display: flex; flex-direction: column; height: 100%;">
                                 <div style="background: #c0c0c0; border: 2px solid; border-color: #dfdfdf #808080 #808080 #dfdfdf; padding: 4px; margin-bottom: 4px; display: flex; flex-direction: column; gap: 4px;">
                                     <div style="display: flex; gap: 4px; align-items: center;"><span style="width: 55px; color: #000000;">Emisor:</span><div style="flex: 1; background: #fff; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 2px 4px; color: #000000;">${mensaje.emisor}</div></div>
+                                    <div style="display: flex; gap: 4px; align-items: center;"><span style="width: 55px; color: #000000;">Fecha:</span><div style="flex: 1; background: #fff; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 2px 4px; color: #000000;">${mensaje.fecha}</div></div>
                                     <div style="display: flex; gap: 4px; align-items: center;"><span style="width: 55px; color: #000000;">Asunto:</span><div style="flex: 1; background: #fff; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 2px 4px; color: #000000;">${mensaje.asunto}</div></div>
                                 </div>
                                 <div style="flex: 1; background: #fff; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 4px; overflow-y: auto;">
-                                    <pre style="font-family: 'Courier New', Courier, monospace; margin: 0; white-space: pre-wrap; font-size: 12px; color: #000000;">${mensaje.cuerpo}</pre>
+                                    <pre style="font-family: 'neuemachina'; margin: 0; white-space: pre-wrap; font-size: 12px; color: #000000;">${mensaje.cuerpo}</pre>
                                 </div>
                                 <div style="margin-top: 4px; display: flex; justify-content: flex-end;">
                                     <button class="btn-borrar-mail" style="border: 2px solid; border-color: #fff #000 #000 #fff; background: #c0c0c0; color: #000000; cursor: var(--cursorg-url), auto !important; padding: 2px 12px; font-weight: bold;">Borrar</button>
@@ -493,17 +552,65 @@ class Win98Desktop extends Application {
                             </div>
                         `);
 
+                        if (timerLeido) clearTimeout(timerLeido);
+
+                        if (!esGM && !mensaje.esLeido) {
+                            timerLeido = setTimeout(async () => {
+                                mensaje.esLeido = true;
+                                $item.css("font-weight", "normal");
+
+                                const nuevoContenido = mensaje.textoOriginal.trim() + "\n[Leido]";
+                                mensaje.textoOriginal = nuevoContenido;
+
+                                const mailRef = app.archivos.find(a => a.tipo === "mail");
+                                if (mailRef && mailRef.count > 0) {
+                                    mailRef.count -= 1;
+                                    const badge = html.find("#badge-correo");
+                                    if (mailRef.count > 0) {
+                                        badge.css("display", "flex").text(mailRef.count);
+                                    } else {
+                                        badge.css("display", "none");
+                                    }
+                                }
+
+                                try {
+                                    const nombreArchivo = decodeURIComponent(mensaje.ruta.split('/').pop().split('?')[0]);
+                                    const archivoLeido = new File([nuevoContenido], nombreArchivo, {type: "text/plain"});
+                                    await FilePicker.upload("data", mensaje.dir, archivoLeido, { overwrite: true });
+                                } catch (e) {}
+                            }, 3000);
+                        }
+
                         divMail.find(".btn-borrar-mail").click(async () => {
-                            const nombreArchivo = mensaje.ruta.split('/').pop();
-                            const archivoBorrador = new File(["_DELETED_"], nombreArchivo, {type: "text/plain"});
-                            await FilePicker.upload("data", mensaje.dir, archivoBorrador);
+                            if (timerLeido) clearTimeout(timerLeido);
+                            
+                            if (!esGM && !mensaje.esLeido) {
+                                const mailRef = app.archivos.find(a => a.tipo === "mail");
+                                if (mailRef && mailRef.count > 0) {
+                                    mailRef.count -= 1;
+                                    const badge = html.find("#badge-correo");
+                                    if (mailRef.count > 0) {
+                                        badge.css("display", "flex").text(mailRef.count);
+                                    } else {
+                                        badge.css("display", "none");
+                                    }
+                                }
+                            }
+
+                            try {
+                                const nombreArchivo = decodeURIComponent(mensaje.ruta.split('/').pop().split('?')[0]);
+                                const archivoBorrador = new File(["_DELETED_"], nombreArchivo, {type: "text/plain"});
+                                await FilePicker.upload("data", mensaje.dir, archivoBorrador, { overwrite: true });
+                            } catch (e) {}
+                            
                             cargarRecibidos();
                         });
                     });
                 };
 
                 const cargarNuevo = () => {
-                    const opcionesReceptor = game.users.filter(u => !u.isGM).map(u => `<option value="${u.name}">${u.name}</option>`).join('');
+                    if (timerLeido) clearTimeout(timerLeido);
+                    const opcionesReceptor = `<option value="ALL">Todos los usuarios conectados</option>` + game.users.filter(u => !u.isGM).map(u => `<option value="${u.name}">${u.name}</option>`).join('');
                     
                     divMail.find(".mail-content").html(`
                         <div style="display: flex; flex-direction: column; width: 100%; gap: 6px; padding: 4px;">
@@ -521,7 +628,7 @@ class Win98Desktop extends Application {
                                 <span style="width: 65px; color: #000000;">Asunto:</span>
                                 <input type="text" id="mail-asunto" style="flex: 1; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 2px; font-family: inherit; color: #000000 !important; background: #fff;">
                             </div>
-                            <textarea id="mail-texto" style="flex: 1; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 4px; font-family: 'Courier New', Courier, monospace; resize: none; color: #000000 !important; background: #fff;"></textarea>
+                            <textarea id="mail-texto" style="flex: 1; border: 2px solid; border-color: #808080 #fff #fff #808080; padding: 4px; font-family: 'neuemachina'; resize: none; color: #000000 !important; background: #fff;"></textarea>
                             <button id="mail-enviar" style="border: 2px solid; border-color: #fff #000 #000 #fff; background: #c0c0c0; color: #000000; cursor: var(--cursorg-url), auto !important; padding: 4px; font-family: inherit; font-weight: bold;">Enviar</button>
                         </div>
                     `);
@@ -529,21 +636,30 @@ class Win98Desktop extends Application {
                     divMail.find("#mail-enviar").click(async () => {
                         const valEmisor = divMail.find("#mail-emisor").val();
                         const valReceptorCrudo = divMail.find("#mail-receptor").val();
-                        const valReceptor = valReceptorCrudo.replace(/ /g, "_");
                         const valAsunto = divMail.find("#mail-asunto").val() || "Sin Asunto";
                         const valTexto = divMail.find("#mail-texto").val();
                         game.macros.getName("Mail").execute();
 
-                        const rutaDestino = `${directorioBase}/mail-${valReceptor}`;
-                        try {
-                            await FilePicker.browse("data", rutaDestino);
-                        } catch (e) {
-                            await FilePicker.createDirectory("data", rutaDestino);
+                        const estructuraArchivo = `Emisor: ${valEmisor}\nAsunto: ${valAsunto}\n\n${valTexto}`;
+                        
+                        let receptores = [];
+                        if (valReceptorCrudo === "ALL") {
+                            receptores = game.users.filter(u => !u.isGM && u.active).map(u => u.name.replace(/ /g, "_"));
+                        } else {
+                            receptores = [valReceptorCrudo.replace(/ /g, "_")];
                         }
 
-                        const estructuraArchivo = `Emisor: ${valEmisor}\nAsunto: ${valAsunto}\n\n${valTexto}`;
-                        const nuevoArchivo = new File([estructuraArchivo], `${Date.now()}.txt`, {type: "text/plain"});
-                        await FilePicker.upload("data", rutaDestino, nuevoArchivo);
+                        for (const receptor of receptores) {
+                            const rutaDestino = `${directorioBase}/mail-${receptor}`;
+                            try {
+                                await FilePicker.browse("data", rutaDestino);
+                            } catch (e) {
+                                await FilePicker.createDirectory("data", rutaDestino);
+                            }
+
+                            const nuevoArchivo = new File([estructuraArchivo], `${Date.now()}_${receptor}.txt`, {type: "text/plain"});
+                            await FilePicker.upload("data", rutaDestino, nuevoArchivo);
+                        }
 
                         cargarRecibidos();
                     });
@@ -586,7 +702,7 @@ class Win98Desktop extends Application {
 async function ejecutarMacro() {
     const busqueda = await FilePicker.browse("data", directorioBase);
     const archivoError = busqueda.files.find(ruta => {
-        const nombre = ruta.split('/').pop();
+        const nombre = ruta.split('/').pop().split('?')[0];
         return nombre.startsWith("error_") && nombre.endsWith(".avif");
     });
 
@@ -597,7 +713,8 @@ async function ejecutarMacro() {
     }
 
     const archivosValidos = await obtenerContenidoDirectorio(directorioBase);
-    archivosValidos.unshift({ nombre: "Correo", tipo: "mail" });
+    const numCorreos = await obtenerContadorCorreos();
+    archivosValidos.unshift({ nombre: "Correo", tipo: "mail", count: numCorreos });
     const catalogoGlobal = await compilarCatalogo(directorioBase);
     new Win98Desktop(archivosValidos, catalogoGlobal, archivoError).render(true);
 }
